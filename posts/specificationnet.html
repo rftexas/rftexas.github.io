@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <title>Freels Technology - Specification.Net</title>
+
+  <link rel="canonical" href='/posts/specificationnet'>
+
+      <link type="application/rss+xml" rel="alternate" href="/feed.rss" />
+      <link type="application/atom+xml" rel="alternate" href="/feed.atom" />
+
+  <meta name="application-name" content='Freels Technology' />
+  <meta name="msapplication-tooltip" content='Freels Technology' />
+  <meta name="msapplication-starturl" content='/' />
+
+  <meta property="og:title" content='Freels Technology - Specification.Net' />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content='/posts/specificationnet' />
+
+  <link rel="icon" href='/favicon.ico'>
+
+  <!-- Custom fonts for this template -->
+  <link href='/vendor/fontawesome-free/css/all.min.css' rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css?family=Lora:400,700,400italic,700italic" rel="stylesheet" data-no-mirror>
+  <link href="https://fonts.googleapis.com/css?family=Open+Sans:300italic,400italic,600italic,700italic,800italic,400,300,600,700,800" rel="stylesheet" data-no-mirror>
+
+  <!-- Styles for this template (also includes Bootstrap) -->
+  <link href='/scss/clean-blog.css' rel="stylesheet">
+
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js" data-no-mirror></script>
+  <script src="https://cdn.jsdelivr.net/npm/quicklink@2.3.0/dist/quicklink.umd.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism.css" rel="stylesheet">
+
+  
+
+
+  
+
+</head>
+
+<body>
+
+  <!-- Navigation -->
+  <nav class="navbar navbar-expand-lg navbar-light fixed-top" id="mainNav">
+  <div class="container">
+    <a class="navbar-brand" href='/'>Freels Technology</a>
+    <button class="navbar-toggler navbar-toggler-right" type="button" data-bs-toggle="collapse" data-bs-target="#navbarResponsive" aria-controls="navbarResponsive" aria-expanded="false" aria-label="Toggle navigation">
+      Menu
+      <i class="fas fa-bars"></i>
+    </button>
+    <div class="collapse navbar-collapse" id="navbarResponsive">
+      <ul class="navbar-nav ms-auto">
+          <li class="nav-item">
+    <a class="nav-link" href="/posts">Posts</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link" href="/tags">Tags</a>
+  </li>
+
+      </ul>
+    </div>
+  </div>
+</nav>
+
+
+  <!-- Page Header -->
+  <header class="masthead no-image">
+  <div class="container position-relative">
+    <div class="row">
+      <div class="col-md-12">
+        <div class='post-heading'>
+          <h1>
+            Specification.Net
+          </h1>
+            <span class="subheading">An unoppinionated .Net library for Specifications</span>
+            <div class="meta">Published on Saturday, June 17, 2023</div>
+              <div class="mt-3">
+                  <a href="/tags/net" class="badge text-bg-light"> .Net</a>
+                  <a href="/tags/design-patterns" class="badge text-bg-light"> Design Patterns</a>
+              </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+
+  <!-- Main Content -->
+  <div class="container">
+    <div class="row">
+      <div id="content" class="col-md-12">
+        <h1 id="specification.net">Specification.Net</h1>
+<p>I was recently introduced to the Specification pattern when someone linked their own implementation of it on Mastodon. The pattern itself is interesting enough for it's own blog post, but let's see if I can cover the key parts of it now.</p>
+<h2 id="specification-pattern">Specification Pattern</h2>
+<p>The Specification Pattern is a design pattern often associated with Domain Driven Design where you abstract away some of your business logic so that can be reused or separately tested. Writing it out, it sounds kind of silly. Let's look at an example, but first we need some logic and rules.</p>
+<p>The example we are going to work with is this: we are writing an Inventory System. Inventory can be stocked and sold. Logically, you cannot stock or sell Negative amounts and you cannot sell more than you have stocked. Let's take our first pass.</p>
+<pre><code class="language-C#">public record Item(string Name, string Sku, decimal Price) {}
+public class StockedItem{
+    public Item Item { get; }
+    public int Stock { get; }
+
+    public StockedItem(Item item, int stock) =&gt; (Item, Stock) = (item, stock);
+}
+
+public class Inventory {
+    public List&lt;StockedItem&gt; StockedItems {get;} = new();
+
+    public bool Stock(Item item, int amount) {
+        if(amount &gt; 0){
+            var stockedItem = StockedItems.FirstOrDefault(i =&gt; i.Item == item);
+            if(stockedItem != null) {
+                stockedItem.Stock += amount;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public bool Sell(Item item, int amount) {
+        if(amount &gt; 0){
+            var stockedItem = StockedItems.FirstOrDefault(i =&gt; i.Item == item);
+            if(stockedItem != null &amp;&amp; stockedItem.Stock &gt;= amount) {
+                stockedItem.Stock -= amount;
+                return true;
+            }
+        }
+        return false;
+    }
+}
+</code></pre>
+<p>Looking at this example, we've got quite a bit of duplicated code. What if we could move the business rules. A Specification takes an Entity, evalutes a Rule, and returns a Result to say if the Rule is Satisfied. Let's write a simple Specification.</p>
+<pre><code class="language-C#">public abstract class Specification&lt;T&gt; {
+    private readonly Func&lt;T, bool&gt; _compiledSpec;
+    public Expression&lt;Func&lt;T, bool&gt;&gt; Expression { get; }
+
+    public Specification(Expression&lt;Func&lt;T, bool&gt;&gt; spec) {
+        Expression = spec;
+        _compiledSpec = spec.Compile();
+    }
+
+    public bool Satisfied(T item) =&gt; _compiledSpec(item);
+}
+
+public class MatchingStockItem: Specification&lt;StockedItem&gt; {
+    public MatchingStockItem(StockedItem item) : base(si =&gt; si.Item.Sku == item.Item.Sku) { }
+}
+
+
+public class HasEnoughStock: Specification&lt;StockedItem&gt; {
+    public HasEnoughStock(int amount): base(si =&gt; si.Stock &gt;= amount) { }
+}
+
+</code></pre>
+<p>I wrote two Specs now. The first checks for if a Stocked Item is for the Item we want. The second checks if the StockedItem has enough Stock. We would use these Specifications like this.</p>
+<pre><code class="language-C#">
+public class Inventory {
+    public List&lt;StockedItem&gt; StockedItems {get;} = new();
+    private readonly Specification&lt;StockedItem&gt; _nonNegative = new HasEnoughStock(0);
+
+    public bool Stock(StockedItem toStock) {
+        if(_nonNegative_.Satisfies(toStock)){
+            var stockedItem = StockedItems.FirstOrDefault(new MatchingStockItem(item).Satisfies);
+            if(stockedItem != null) {
+                stockedItem.Stock += toStock.Stock;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public bool Sell(StockedItem toSell) {
+        if(_nonNegative.Satisfies(toSell)){
+            var stockedItem = StockedItems.FirstOrDefault(new MatchingStockItem(item).Satisfies);
+            if(item != null &amp;&amp; new HasEnoughStock(toSell.Stock).Satisfies(item)) {
+                stockedItem.Stock -= toSell.Stock;
+                return true;
+            }
+        }
+        return false;
+    }
+}
+</code></pre>
+<p>That's neat. It's not a whole lot simpler. At least, not yet. We haven't explored one of the neat things about Specifications. They are Composable. Meaning, we can create And, Or, and Not Specifications and create arbitrary logic.</p>
+<h3 id="composable-specifications">Composable Specifications</h3>
+<p>Let's build these new Specifications and rewrite the logic with them.</p>
+<pre><code class="language-C#">using LinqExpression = System.Linq.Expressions.Expression;
+
+public class NotSpecification&lt;T&gt; : Specification&lt;T&gt;
+{
+    public NotSpecification(ISpecification&lt;T&gt; left) : base(
+        LinqExpression.Lambda&lt;Func&lt;T, bool&gt;&gt;(
+            LinqExpression.Not(
+                LinqExpression.Invoke(left.Expression, left.Expression.Parameters.First()))
+                , left.Expression.Parameters.First())
+    ) { }
+}
+
+public class AndSpecification&lt;T&gt; : Specification&lt;T&gt;
+{
+    public AndSpecification(Specification&lt;T&gt; left, Specification&lt;T&gt; right) : base(
+        LinqExpression.Lambda&lt;Func&lt;T, bool&gt;&gt;(
+            LinqExpression.AndAlso(
+                left.Expression.Body,
+                ReferenceEquals(left.Expression.Parameters.First(), right.Expression.Parameters.First())
+                    ? right.Expression.Body
+                    : LinqExpression.Invoke(right.Expression, left.Expression.Parameters.First()))
+            , left.Expression.Parameters.First())
+    ) { }
+}
+
+public class OrSpecification&lt;T&gt; : Specification&lt;T&gt;
+{
+    public OrSpecification(Specification&lt;T&gt; left, Specification&lt;T&gt; right) : base(
+        LinqExpression.Lambda&lt;Func&lt;T, bool&gt;&gt;(
+            LinqExpression.OrElse(
+                left.Expression.Body,
+                ReferenceEquals(left.Expression.Parameters.First(), right.Expression.Parameters.First())
+                    ? right.Expression.Body
+                    : LinqExpression.Invoke(right.Expression, left.Expression.Parameters.First()))
+                , left.Expression.Parameters.First())
+    ) { }
+}
+
+public static class SpecificationExtensions {
+    public static Specification&lt;T&gt; And(this Specification&lt;T&gt; left, Specification&lt;T&gt; right) 
+        =&gt; new AndSpecification(left, right);
+    public static Specification&lt;T&gt; Or(this Specification&lt;T&gt; left, Specification&lt;T&gt; right) 
+        =&gt; new OrSpecification(left, right);
+}
+
+
+public class Inventory {
+    public List&lt;StockedItem&gt; StockedItems {get;} = new();
+    private readonly Specification&lt;StockedItem&gt; _nonNegative = 
+        new HasEnoughStock(0);
+
+    public bool Stock(StockedItem toStock) {
+        if(_nonNegative_.Satisfies(toStock)) {
+            var stockedItem = StockedItems.FirstOrDefault(
+                new MatchingStockItem(toStock).Satisfies);
+            if(stockedItem != null) {
+                stockedItem.Stock += toStock.Stock;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public bool Sell(StockedItem toSell) {
+        if(_nonNegative.Satisfies(toSell)) {
+            var stockedItem = StockedItems.FirstOrDefault(
+                new MatchingStockItem(toSell)
+                .And(new HasEnoughStock(toSell.Stock)).Satisfies);
+            if(item != null) {
+                stockedItem.Stock -= toSell.Stock;
+                return true;
+            }
+        }
+        return false;
+    }
+}
+</code></pre>
+<p>Nice! Now we can write whatever kind of boolean logic we want.It might get a little verbose, but we could write more extension methods to handle it. What we've written is nice and all, but having to load a bunch of State into memory to allow Business Rules to run is not great. Particularly when we can write Database Queries that would execute much faster.</p>
+<h3 id="entity-framework-integration">Entity Framework Integration</h3>
+<p>In comes EntityFramework Core. Since EntityFramework is written on top of the Linq operators and takes Expressions as arguments, we can use our already defined Specifications against the database. What's that look like? For starters, we'll move our Domain logic a little.</p>
+<pre><code class="language-C#">public class StockedItem {
+    public Item Item { get; private set; }
+    public int Stock { get; private set; }
+
+    public void Stock(ushort amount) {
+        Stock += amount;
+    }
+
+    public bool Sell(ushort amount) {
+        Stock -= amount;
+    }
+}
+
+public class MatchingStockItem: Specification&lt;StockedItem&gt; {
+    public MatchingStockItem(string sku) : base(si =&gt; si.Item.Sku == sku) { }
+}
+
+
+public class HasEnoughStock: Specification&lt;StockedItem&gt; {
+    public HasEnoughStock(int amount): base(si =&gt; si.Stock &gt;= amount) { }
+}
+
+public class StockHandler {
+    private readonly DataContext _context;
+    public StockHandler(DataContext context) =&gt; _context = context;
+
+    public async Task&lt;bool&gt; Stock(string sku, int amount) {
+        bool success = amount &gt; 0;
+        if(success) {
+            var stockedItem = await _context.StockedItems
+                .FirstOrDefaultAsync(new MatchingStockItem(sku).Expression);
+            
+            if (stockedItem != null) {
+                stockedItem.Stock(amount);
+                success = true;
+            }
+        }
+        return success;
+    }
+
+    public async Task&lt;bool&gt; Sell(string sku, int amount) {
+        bool success = amount &gt; 0;
+        if(success) {
+            var stockedItem = await _context.StockedItems
+                .FirstOrDefaultAsync(new MatchingStockItem(sku).And(new HasEnoughStock(amount)).Expression);
+            
+            if (stockedItem != null) {
+                stockedItem.Sell(amount);
+                success = true;
+            }
+        }
+        return success;
+    }
+}
+</code></pre>
+<p>The gotcha here is you have to use the .Expression or EntityFramework will bomb out with an error about not being able to convert the Expression into a Query. That said, this pattern works really well with the Repository Pattern wrapped around an EntityFramework Context. I'll show what a sample Repository can look like.</p>
+<pre><code class="language-C#">public interface IReadOnlyRepository&lt;T&gt; {
+    Task&lt;T&gt; Get(Specification&lt;T&gt; spec);
+    Task&lt;IEnumerable&lt;T&gt;&gt; GetAll(Specification&lt;T&gt; spec);
+    Task&lt;IEnumerable&lt;TOut&gt;&gt; GetAll(Specification&lt;T&gt; spec, Expression&lt;Func&lt;T, TOut&gt;&gt; transform);
+}
+
+public interface IRepository&lt;T&gt; {
+    Task Create(T item);
+    Task Delete(T item);
+    Task Delete(Specification&lt;T&gt; spec);
+    Task Update(T item);
+}
+
+public interface IInventoryItemRepository: IReadOnlyRepository&lt;T&gt;, IRepository&lt;T&gt; { }
+
+public class InventoryItemRepository: IInventoryItemRepository {
+    private readonly DataContext _context;
+    public InventoryItemRepository(DataContext context) =&gt; _context = context;
+
+    public async Task&lt;T?&gt; Get(Specification&lt;T&gt; spec) =&gt; 
+        await _context.InventoryItems.FirstOrDefaultAsync(spec.Expression);
+    public async Task&lt;IEnumerable&lt;T&gt;&gt; GetAll(Specification&lt;T&gt; spec) =&gt; 
+        await _context.InventoryItems.Where(spec.Expression).ToArrayAsync();
+    public async Task&lt;IEnumerable&lt;TOut&gt;&gt; GetAll(Specification&lt;T&gt; spec, Expression&lt;Func&lt;T, TOut&gt;&gt; transform) =&gt;
+        await _context.InventoryItems.Where(spec.Expression).Select(transform).ToArrayAsync();
+    public async Task Delete(Specification&lt;T&gt; spec) =&gt; 
+        await _context.InventoryItems.Where(spec.Expression).ExecuteDeleteAsync();
+    // The other implementations are trivial and not very fun to show.
+}
+</code></pre>
+<p>And there you have it, a Repository that handles Business Rules at the Database level which is Mockable and we can test the actual logic in Memory without using the EntityFramework InMemory provider that Microsoft says not to use. The best of all worlds.</p>
+<p>Hopefully you've enjoyed this little walk through an interesting Design Pattern.</p>
+
+
+        
+
+      </div>
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- Footer -->
+  <footer>
+  <div class="container">
+    <div class="row">
+      <div class="col-md-12 text-center">
+        <p class="copyright">Copyright &#xA9; 2023 Ryan Freels</p>
+
+        <ul class="list-inline text-center small">
+            <li class="list-inline-item">
+              <a href="/feed.rss"><i class="fa fa-rss"></i> RSS Feed</a>
+            </li>
+            <li class="list-inline-item">
+              <a href="/feed.atom"><i class="fa fa-rss"></i> Atom Feed</a>
+            </li>
+        </ul>
+        <br />
+        <div class="font-weight-bold small"><a href="https://statiq.dev">Generated by Statiq</a></div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+
+  <!-- Scripts -->
+  <script src='/vendor/bootstrap/js/bootstrap.bundle.min.js'></script>
+  <script src='/vendor/startbootstrap-clean-blog/js/scripts.js'></script>
+  <script src='/js/clean-blog.js'></script>
+  
+
+  
+
+</body>
+
+</html>

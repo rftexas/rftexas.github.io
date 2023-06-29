@@ -1,0 +1,278 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+	<id>/</id>
+	<title />
+	<link rel="self" href="/" />
+	<rights>Copyright © 2023 Ryan Freels</rights>
+	<updated>2023-06-29T23:29:03Z</updated>
+	<entry>
+		<id>/posts/specificationnet</id>
+		<title>Specification.Net</title>
+		<link href="/posts/specificationnet" />
+		<updated>2023-06-17T00:00:00Z</updated>
+		<content>&lt;h1 id="specification.net"&gt;Specification.Net&lt;/h1&gt;
+&lt;p&gt;I was recently introduced to the Specification pattern when someone linked their own implementation of it on Mastodon. The pattern itself is interesting enough for it's own blog post, but let's see if I can cover the key parts of it now.&lt;/p&gt;
+&lt;h2 id="specification-pattern"&gt;Specification Pattern&lt;/h2&gt;
+&lt;p&gt;The Specification Pattern is a design pattern often associated with Domain Driven Design where you abstract away some of your business logic so that can be reused or separately tested. Writing it out, it sounds kind of silly. Let's look at an example, but first we need some logic and rules.&lt;/p&gt;
+&lt;p&gt;The example we are going to work with is this: we are writing an Inventory System. Inventory can be stocked and sold. Logically, you cannot stock or sell Negative amounts and you cannot sell more than you have stocked. Let's take our first pass.&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-C#"&gt;public record Item(string Name, string Sku, decimal Price) {}
+public class StockedItem{
+    public Item Item { get; }
+    public int Stock { get; }
+
+    public StockedItem(Item item, int stock) =&amp;gt; (Item, Stock) = (item, stock);
+}
+
+public class Inventory {
+    public List&amp;lt;StockedItem&amp;gt; StockedItems {get;} = new();
+
+    public bool Stock(Item item, int amount) {
+        if(amount &amp;gt; 0){
+            var stockedItem = StockedItems.FirstOrDefault(i =&amp;gt; i.Item == item);
+            if(stockedItem != null) {
+                stockedItem.Stock += amount;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public bool Sell(Item item, int amount) {
+        if(amount &amp;gt; 0){
+            var stockedItem = StockedItems.FirstOrDefault(i =&amp;gt; i.Item == item);
+            if(stockedItem != null &amp;amp;&amp;amp; stockedItem.Stock &amp;gt;= amount) {
+                stockedItem.Stock -= amount;
+                return true;
+            }
+        }
+        return false;
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Looking at this example, we've got quite a bit of duplicated code. What if we could move the business rules. A Specification takes an Entity, evalutes a Rule, and returns a Result to say if the Rule is Satisfied. Let's write a simple Specification.&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-C#"&gt;public abstract class Specification&amp;lt;T&amp;gt; {
+    private readonly Func&amp;lt;T, bool&amp;gt; _compiledSpec;
+    public Expression&amp;lt;Func&amp;lt;T, bool&amp;gt;&amp;gt; Expression { get; }
+
+    public Specification(Expression&amp;lt;Func&amp;lt;T, bool&amp;gt;&amp;gt; spec) {
+        Expression = spec;
+        _compiledSpec = spec.Compile();
+    }
+
+    public bool Satisfied(T item) =&amp;gt; _compiledSpec(item);
+}
+
+public class MatchingStockItem: Specification&amp;lt;StockedItem&amp;gt; {
+    public MatchingStockItem(StockedItem item) : base(si =&amp;gt; si.Item.Sku == item.Item.Sku) { }
+}
+
+
+public class HasEnoughStock: Specification&amp;lt;StockedItem&amp;gt; {
+    public HasEnoughStock(int amount): base(si =&amp;gt; si.Stock &amp;gt;= amount) { }
+}
+
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;I wrote two Specs now. The first checks for if a Stocked Item is for the Item we want. The second checks if the StockedItem has enough Stock. We would use these Specifications like this.&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-C#"&gt;
+public class Inventory {
+    public List&amp;lt;StockedItem&amp;gt; StockedItems {get;} = new();
+    private readonly Specification&amp;lt;StockedItem&amp;gt; _nonNegative = new HasEnoughStock(0);
+
+    public bool Stock(StockedItem toStock) {
+        if(_nonNegative_.Satisfies(toStock)){
+            var stockedItem = StockedItems.FirstOrDefault(new MatchingStockItem(item).Satisfies);
+            if(stockedItem != null) {
+                stockedItem.Stock += toStock.Stock;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public bool Sell(StockedItem toSell) {
+        if(_nonNegative.Satisfies(toSell)){
+            var stockedItem = StockedItems.FirstOrDefault(new MatchingStockItem(item).Satisfies);
+            if(item != null &amp;amp;&amp;amp; new HasEnoughStock(toSell.Stock).Satisfies(item)) {
+                stockedItem.Stock -= toSell.Stock;
+                return true;
+            }
+        }
+        return false;
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;That's neat. It's not a whole lot simpler. At least, not yet. We haven't explored one of the neat things about Specifications. They are Composable. Meaning, we can create And, Or, and Not Specifications and create arbitrary logic.&lt;/p&gt;
+&lt;h3 id="composable-specifications"&gt;Composable Specifications&lt;/h3&gt;
+&lt;p&gt;Let's build these new Specifications and rewrite the logic with them.&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-C#"&gt;using LinqExpression = System.Linq.Expressions.Expression;
+
+public class NotSpecification&amp;lt;T&amp;gt; : Specification&amp;lt;T&amp;gt;
+{
+    public NotSpecification(ISpecification&amp;lt;T&amp;gt; left) : base(
+        LinqExpression.Lambda&amp;lt;Func&amp;lt;T, bool&amp;gt;&amp;gt;(
+            LinqExpression.Not(
+                LinqExpression.Invoke(left.Expression, left.Expression.Parameters.First()))
+                , left.Expression.Parameters.First())
+    ) { }
+}
+
+public class AndSpecification&amp;lt;T&amp;gt; : Specification&amp;lt;T&amp;gt;
+{
+    public AndSpecification(Specification&amp;lt;T&amp;gt; left, Specification&amp;lt;T&amp;gt; right) : base(
+        LinqExpression.Lambda&amp;lt;Func&amp;lt;T, bool&amp;gt;&amp;gt;(
+            LinqExpression.AndAlso(
+                left.Expression.Body,
+                ReferenceEquals(left.Expression.Parameters.First(), right.Expression.Parameters.First())
+                    ? right.Expression.Body
+                    : LinqExpression.Invoke(right.Expression, left.Expression.Parameters.First()))
+            , left.Expression.Parameters.First())
+    ) { }
+}
+
+public class OrSpecification&amp;lt;T&amp;gt; : Specification&amp;lt;T&amp;gt;
+{
+    public OrSpecification(Specification&amp;lt;T&amp;gt; left, Specification&amp;lt;T&amp;gt; right) : base(
+        LinqExpression.Lambda&amp;lt;Func&amp;lt;T, bool&amp;gt;&amp;gt;(
+            LinqExpression.OrElse(
+                left.Expression.Body,
+                ReferenceEquals(left.Expression.Parameters.First(), right.Expression.Parameters.First())
+                    ? right.Expression.Body
+                    : LinqExpression.Invoke(right.Expression, left.Expression.Parameters.First()))
+                , left.Expression.Parameters.First())
+    ) { }
+}
+
+public static class SpecificationExtensions {
+    public static Specification&amp;lt;T&amp;gt; And(this Specification&amp;lt;T&amp;gt; left, Specification&amp;lt;T&amp;gt; right) 
+        =&amp;gt; new AndSpecification(left, right);
+    public static Specification&amp;lt;T&amp;gt; Or(this Specification&amp;lt;T&amp;gt; left, Specification&amp;lt;T&amp;gt; right) 
+        =&amp;gt; new OrSpecification(left, right);
+}
+
+
+public class Inventory {
+    public List&amp;lt;StockedItem&amp;gt; StockedItems {get;} = new();
+    private readonly Specification&amp;lt;StockedItem&amp;gt; _nonNegative = 
+        new HasEnoughStock(0);
+
+    public bool Stock(StockedItem toStock) {
+        if(_nonNegative_.Satisfies(toStock)) {
+            var stockedItem = StockedItems.FirstOrDefault(
+                new MatchingStockItem(toStock).Satisfies);
+            if(stockedItem != null) {
+                stockedItem.Stock += toStock.Stock;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public bool Sell(StockedItem toSell) {
+        if(_nonNegative.Satisfies(toSell)) {
+            var stockedItem = StockedItems.FirstOrDefault(
+                new MatchingStockItem(toSell)
+                .And(new HasEnoughStock(toSell.Stock)).Satisfies);
+            if(item != null) {
+                stockedItem.Stock -= toSell.Stock;
+                return true;
+            }
+        }
+        return false;
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Nice! Now we can write whatever kind of boolean logic we want.It might get a little verbose, but we could write more extension methods to handle it. What we've written is nice and all, but having to load a bunch of State into memory to allow Business Rules to run is not great. Particularly when we can write Database Queries that would execute much faster.&lt;/p&gt;
+&lt;h3 id="entity-framework-integration"&gt;Entity Framework Integration&lt;/h3&gt;
+&lt;p&gt;In comes EntityFramework Core. Since EntityFramework is written on top of the Linq operators and takes Expressions as arguments, we can use our already defined Specifications against the database. What's that look like? For starters, we'll move our Domain logic a little.&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-C#"&gt;public class StockedItem {
+    public Item Item { get; private set; }
+    public int Stock { get; private set; }
+
+    public void Stock(ushort amount) {
+        Stock += amount;
+    }
+
+    public bool Sell(ushort amount) {
+        Stock -= amount;
+    }
+}
+
+public class MatchingStockItem: Specification&amp;lt;StockedItem&amp;gt; {
+    public MatchingStockItem(string sku) : base(si =&amp;gt; si.Item.Sku == sku) { }
+}
+
+
+public class HasEnoughStock: Specification&amp;lt;StockedItem&amp;gt; {
+    public HasEnoughStock(int amount): base(si =&amp;gt; si.Stock &amp;gt;= amount) { }
+}
+
+public class StockHandler {
+    private readonly DataContext _context;
+    public StockHandler(DataContext context) =&amp;gt; _context = context;
+
+    public async Task&amp;lt;bool&amp;gt; Stock(string sku, int amount) {
+        bool success = amount &amp;gt; 0;
+        if(success) {
+            var stockedItem = await _context.StockedItems
+                .FirstOrDefaultAsync(new MatchingStockItem(sku).Expression);
+            
+            if (stockedItem != null) {
+                stockedItem.Stock(amount);
+                success = true;
+            }
+        }
+        return success;
+    }
+
+    public async Task&amp;lt;bool&amp;gt; Sell(string sku, int amount) {
+        bool success = amount &amp;gt; 0;
+        if(success) {
+            var stockedItem = await _context.StockedItems
+                .FirstOrDefaultAsync(new MatchingStockItem(sku).And(new HasEnoughStock(amount)).Expression);
+            
+            if (stockedItem != null) {
+                stockedItem.Sell(amount);
+                success = true;
+            }
+        }
+        return success;
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;The gotcha here is you have to use the .Expression or EntityFramework will bomb out with an error about not being able to convert the Expression into a Query. That said, this pattern works really well with the Repository Pattern wrapped around an EntityFramework Context. I'll show what a sample Repository can look like.&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-C#"&gt;public interface IReadOnlyRepository&amp;lt;T&amp;gt; {
+    Task&amp;lt;T&amp;gt; Get(Specification&amp;lt;T&amp;gt; spec);
+    Task&amp;lt;IEnumerable&amp;lt;T&amp;gt;&amp;gt; GetAll(Specification&amp;lt;T&amp;gt; spec);
+    Task&amp;lt;IEnumerable&amp;lt;TOut&amp;gt;&amp;gt; GetAll(Specification&amp;lt;T&amp;gt; spec, Expression&amp;lt;Func&amp;lt;T, TOut&amp;gt;&amp;gt; transform);
+}
+
+public interface IRepository&amp;lt;T&amp;gt; {
+    Task Create(T item);
+    Task Delete(T item);
+    Task Delete(Specification&amp;lt;T&amp;gt; spec);
+    Task Update(T item);
+}
+
+public interface IInventoryItemRepository: IReadOnlyRepository&amp;lt;T&amp;gt;, IRepository&amp;lt;T&amp;gt; { }
+
+public class InventoryItemRepository: IInventoryItemRepository {
+    private readonly DataContext _context;
+    public InventoryItemRepository(DataContext context) =&amp;gt; _context = context;
+
+    public async Task&amp;lt;T?&amp;gt; Get(Specification&amp;lt;T&amp;gt; spec) =&amp;gt; 
+        await _context.InventoryItems.FirstOrDefaultAsync(spec.Expression);
+    public async Task&amp;lt;IEnumerable&amp;lt;T&amp;gt;&amp;gt; GetAll(Specification&amp;lt;T&amp;gt; spec) =&amp;gt; 
+        await _context.InventoryItems.Where(spec.Expression).ToArrayAsync();
+    public async Task&amp;lt;IEnumerable&amp;lt;TOut&amp;gt;&amp;gt; GetAll(Specification&amp;lt;T&amp;gt; spec, Expression&amp;lt;Func&amp;lt;T, TOut&amp;gt;&amp;gt; transform) =&amp;gt;
+        await _context.InventoryItems.Where(spec.Expression).Select(transform).ToArrayAsync();
+    public async Task Delete(Specification&amp;lt;T&amp;gt; spec) =&amp;gt; 
+        await _context.InventoryItems.Where(spec.Expression).ExecuteDeleteAsync();
+    // The other implementations are trivial and not very fun to show.
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;And there you have it, a Repository that handles Business Rules at the Database level which is Mockable and we can test the actual logic in Memory without using the EntityFramework InMemory provider that Microsoft says not to use. The best of all worlds.&lt;/p&gt;
+&lt;p&gt;Hopefully you've enjoyed this little walk through an interesting Design Pattern.&lt;/p&gt;
+</content>
+		<summary>&lt;p&gt;I was recently introduced to the Specification pattern when someone linked their own implementation of it on Mastodon. The pattern itself is interesting enough for it's own blog post, but let's see if I can cover the key parts of it now.&lt;/p&gt;</summary>
+	</entry>
+</feed>
